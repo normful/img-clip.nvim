@@ -31,16 +31,30 @@ M.paste_image = function(input)
   end
 
   -- if no input is provided, check clipboard content
-  if clipboard.content_is_image() then
-    return M.paste_image_from_clipboard()
-  end
-
-  -- if clipboard does not contain an image, then get the
-  -- clipboard content as text and check attempt to paste it
+  -- first, check clipboard text for a file path/URL (e.g. file copied from Finder)
+  -- this takes priority over clipboard image data because pngpaste may only
+  -- return a low-quality thumbnail/preview when a file is copied
+  -- check URL before path because a URL may also pass is_image_path (has / + extension)
+  debug.log("paste_image: trying get_content for path/URL first")
   local clipboard_content = clipboard.get_content()
   if clipboard_content then
-    return M.paste_image(clipboard_content)
+    local sanitized = util.sanitize_input(clipboard_content)
+    if util.is_image_url(sanitized) then
+      debug.log("paste_image: clipboard text is image URL, using it")
+      return M.paste_image_from_url(sanitized)
+    elseif util.is_image_path(sanitized) then
+      debug.log("paste_image: clipboard text is image path, using it")
+      return M.paste_image_from_path(sanitized)
+    end
   end
+
+  -- fall back to clipboard image data
+  debug.log("paste_image: checking clipboard content_is_image")
+  if clipboard.content_is_image() then
+    debug.log("paste_image: content IS image, calling paste_image_from_clipboard")
+    return M.paste_image_from_clipboard()
+  end
+  debug.log("paste_image: content is NOT image")
 
   util.warn("Content is not an image.")
   return false
@@ -119,10 +133,10 @@ M.paste_image_from_path = function(src_path)
     return true
   end
 
-  local extension = vim.fn.fnamemodify(src_path, ":e")
+  -- use configured extension for output format (e.g. webp), falling back to source extension
+  local extension = config.get_opt("extension")
   if extension == "" then
-    extension = config.get_opt("extension")
-    util.warn(string.format("No extension detected. Using default: %s.", extension))
+    extension = vim.fn.fnamemodify(src_path, ":e")
   end
 
   local file_path = fs.get_file_path(extension)
@@ -164,7 +178,9 @@ M.paste_image_from_clipboard = function()
   end
 
   local extension = config.get_opt("extension")
+  debug.log("paste_image_from_clipboard: extension=" .. (extension or "nil"))
   local file_path = fs.get_file_path(extension)
+  debug.log("paste_image_from_clipboard: file_path=" .. (file_path or "nil"))
   if not file_path then
     return false
   end
@@ -175,10 +191,13 @@ M.paste_image_from_clipboard = function()
     return false
   end
 
+  debug.log("paste_image_from_clipboard: calling save_image")
   if not clipboard.save_image(file_path) then
     util.error("Could not save image to disk.")
     return false
   end
+  debug.log("paste_image_from_clipboard: save_image succeeded")
+
 
   if util.has("wsl") then
     local output, exit_code = fs.process_image(file_path)

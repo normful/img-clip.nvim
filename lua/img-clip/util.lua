@@ -99,6 +99,9 @@ M.sanitize_input = function(str)
   str = str:match("^'?(.-)'?$") -- remove single quotes
   str = str:gsub("file://", "") -- remove "file://"
   str = str:gsub("%c", "") -- remove control characters
+  str = str:gsub("%%(%x%x)", function(hex)
+    return string.char(tonumber(hex, 16))
+  end) -- decode percent-encoding
 
   return str
 end

@@ -1,5 +1,6 @@
 local clipoard = require("img-clip.clipboard")
 local config = require("img-clip.config")
+local debug = require("img-clip.debug")
 local util = require("img-clip.util")
 
 local M = {}
@@ -162,7 +163,11 @@ end
 ---@return string | nil output
 ---@return number exit_code
 M.copy_file = function(src, dest)
-  return util.execute(string.format("cp '%s' '%s'", src, dest))
+  local ok = vim.loop.fs_copyfile(src, dest)
+  if not ok then
+    return false
+  end
+  return true
 end
 
 ---@param file_path string
@@ -185,7 +190,22 @@ M.process_image = function(file_path, opts)
 
   -- process image
   local output, exit_code =
-    util.execute(string.format("cat '%s' | %s > '%s'", file_path, process_cmd:gsub("%%", "%%%%"), tmp_file_path), true)
+    util.execute(string.format("cat '%s' | %s > '%s'", file_path, process_cmd, tmp_file_path), true)
+
+  -- inject output format into process_cmd based on the target file's extension
+  -- so ImageMagick outputs the correct format (e.g. webp:- for .webp files)
+  -- do this AFTER running the command so we can try again if the file ext differs
+  -- from the format ImageMagick would default to for stdout
+  local ext = vim.fn.fnamemodify(file_path, ":e")
+  if ext ~= "" and exit_code == 0 then
+    -- rebuild with format injection: replace ' - > ' with ' ext:- > '
+    local raw_cmd = string.format("cat '%s' | %s > '%s'", file_path, process_cmd, tmp_file_path)
+    local formatted_cmd = raw_cmd:gsub(" %- > '", " " .. ext .. ":- > '")
+    if formatted_cmd ~= raw_cmd then
+      debug.log("process_image: re-running with format injection")
+      output, exit_code = util.execute(formatted_cmd, true)
+    end
+  end
   if exit_code == 0 then
     M.copy_file(tmp_file_path, file_path)
   end

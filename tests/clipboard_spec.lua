@@ -180,10 +180,19 @@ describe("clipboard", function()
       end)
 
       it("gets first line of clipboard content", function()
+        local call_count = 0
         util.execute = function(command)
-          assert(command:match("pbpaste"))
-          return [[first line
+          call_count = call_count + 1
+          if call_count == 1 then
+            -- first call: osascript to read file URL (simulate no file URL on clipboard)
+            assert(command:match("osascript"), "expected osascript call, got: " .. command)
+            return "", 1
+          else
+            -- second call: fallback to pbpaste
+            assert(command:match("pbpaste"), "expected pbpaste call, got: " .. command)
+            return [[first line
         second line]], 0
+          end
         end
 
         assert.equals("first line", clipboard.get_content())

@@ -1,5 +1,6 @@
 local util = require("img-clip.util")
 local config = require("img-clip.config")
+local debug = require("img-clip.debug")
 
 local M = {}
 
@@ -28,9 +29,11 @@ M.get_clip_cmd = function()
   elseif os.getenv("DISPLAY") and util.executable("xclip") then
     M.clip_cmd = "xclip"
   else
+    debug.log("No clipboard command found")
     return nil
   end
 
+  debug.log("Clipboard cmd: " .. (M.clip_cmd or "nil"))
   return M.clip_cmd
 end
 
@@ -50,7 +53,8 @@ M.content_is_image = function()
 
   -- MacOS (pngpaste)
   elseif cmd == "pngpaste" then
-    local _, exit_code = util.execute("pngpaste -")
+    local _, exit_code = util.execute("pngpaste - > /dev/null 2>/dev/null")
+    debug.log("content_is_image: exit_code=" .. exit_code)
     return exit_code == 0
 
   -- Windows
@@ -63,30 +67,51 @@ M.content_is_image = function()
   return false
 end
 
+--- Inject output format into process_cmd based on file extension.
+--- If process_cmd ends with ' -' (ImageMagick stdout arg), replace with ' ext:- '
+--- so ImageMagick outputs the correct format (e.g. webp:- for .webp files).
+---@param process_cmd string
+---@param file_path string
+---@return string
+local function inject_format(process_cmd, file_path)
+  if process_cmd == "" then
+    return process_cmd
+  end
+  local ext = vim.fn.fnamemodify(file_path, ":e")
+  if ext == "" then
+    return process_cmd
+  end
+  -- Replace trailing ' -'  (space-dash with optional trailing space) with ' ext:- '
+  return process_cmd:gsub(" %- %s*$", " " .. ext .. ":- ")
+end
+
 M.save_image = function(file_path)
   local cmd = M.get_clip_cmd()
   local process_cmd = config.get_opt("process_cmd")
   if process_cmd ~= "" then
     process_cmd = "| " .. process_cmd .. " "
   end
+  process_cmd = inject_format(process_cmd, file_path)
 
   -- Linux (X11)
   if cmd == "xclip" then
     local command =
-      string.format('xclip -selection clipboard -o -t image/png %s> "%s"', process_cmd:gsub("%%", "%%%%"), file_path)
+      string.format('xclip -selection clipboard -o -t image/png %s> "%s"', process_cmd, file_path)
     local _, exit_code = util.execute(command)
     return exit_code == 0
 
   -- Linux (Wayland)
   elseif cmd == "wl-paste" then
-    local command = string.format('wl-paste --type image/png %s> "%s"', process_cmd:gsub("%%", "%%%%"), file_path)
+    local command = string.format('wl-paste --type image/png %s> "%s"', process_cmd, file_path)
     local _, exit_code = util.execute(command)
     return exit_code == 0
 
   -- MacOS (pngpaste)
   elseif cmd == "pngpaste" then
-    local command = string.format('pngpaste - %s> "%s"', process_cmd:gsub("%%", "%%%%"), file_path)
+    local command = string.format('pngpaste - %s> "%s"', process_cmd, file_path)
+    debug.log("save_image cmd: " .. command)
     local _, exit_code = util.execute(command)
+    debug.log("save_image exit_code: " .. exit_code)
     return exit_code == 0
 
   -- Windows
@@ -125,6 +150,21 @@ M.get_content = function()
 
   -- MacOS
   elseif cmd == "pngpaste" then
+    -- try osascript to read file URL from NSPasteboard (for files copied from Finder)
+    -- this returns the full POSIX path instead of just the filename
+    -- uses «class furl» AppleScript type to retrieve file URLs from clipboard
+    local osa_script = 'try\n'
+      .. 'set thePath to POSIX path of (the clipboard as «class furl»)\n'
+      .. 'return thePath\n'
+      .. 'on error\n'
+      .. 'return ""\n'
+      .. 'end try'
+    local osa_cmd = "osascript -e " .. vim.fn.shellescape(osa_script)
+    local osa_output, osa_code = util.execute(osa_cmd)
+    if osa_code == 0 and osa_output and osa_output ~= "" then
+      return osa_output:match("^[^\n]+")
+    end
+    -- fall back to pbpaste (text representation)
     local output, exit_code = util.execute("pbpaste")
     if exit_code == 0 then
       return output:match("^[^\n]+")
